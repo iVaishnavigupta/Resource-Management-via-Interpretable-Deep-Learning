@@ -1,6 +1,6 @@
 # 💧 AquaGuard AI — Water Resource Management via Interpretable Deep Learning
 
-[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://your-app-name.streamlit.app)
+[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)]([https://your-app-name.streamlit.app](https://resource-management-via-interpretable-deep-learning-n6dpmjwqjx.streamlit.app/))
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
@@ -10,7 +10,7 @@
 
 ## Live Demo
 
-🌐 **[View the live dashboard →](https://your-app-name.streamlit.app)**
+🌐 **[View the live dashboard →](https://resource-management-via-interpretable-deep-learning-n6dpmjwqjx.streamlit.app/)**
 
 ---
 
@@ -164,7 +164,7 @@ Open your browser at **http://localhost:8501**
 2. Go to [share.streamlit.io](https://share.streamlit.io)
 3. Sign in with GitHub → click **New app**
 4. Set:
-   - Repository: `YOUR_USERNAME/water-resource-ai`
+   - Repository: `iVaishnavigupta/Resource-Management-via-Interpretable-Deep-Learning`
    - Branch: `main`
    - Main file: `app.py`
 5. Click **Deploy** — your app will be live in ~3 minutes
