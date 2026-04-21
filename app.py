@@ -1,6 +1,6 @@
 """
 AquaGuard AI — Water Resource Management Dashboard
-Streamlit web application for deployment
+Streamlit web application · Fixed for Pandas 2/3 compatibility
 """
 
 import streamlit as st
@@ -30,482 +30,445 @@ st.set_page_config(
 st.markdown("""
 <style>
     .main-header {
-        font-size: 2.2rem;
-        font-weight: 700;
-        color: #1a73e8;
-        margin-bottom: 0.2rem;
+        font-size: 2.2rem; font-weight: 700;
+        color: #1a73e8; margin-bottom: 0.2rem;
     }
     .sub-header {
-        font-size: 0.95rem;
-        color: #888;
-        margin-bottom: 1.5rem;
-    }
-    .metric-card {
-        background: #f0f7ff;
-        border-left: 4px solid #1a73e8;
-        padding: 0.8rem 1rem;
-        border-radius: 6px;
-        margin-bottom: 0.5rem;
-    }
-    .alert-box {
-        background: #fff3cd;
-        border-left: 4px solid #ff9900;
-        padding: 0.8rem 1rem;
-        border-radius: 6px;
-        font-size: 0.9rem;
-    }
-    .alert-critical {
-        background: #fde8e8;
-        border-left: 4px solid #e53e3e;
-        padding: 0.8rem 1rem;
-        border-radius: 6px;
-        font-size: 0.9rem;
+        font-size: 0.95rem; color: #888; margin-bottom: 1.5rem;
     }
     .section-title {
-        font-size: 1.1rem;
-        font-weight: 600;
-        color: #333;
+        font-size: 1.1rem; font-weight: 600; color: #333;
         margin: 1.2rem 0 0.6rem 0;
-        border-bottom: 2px solid #e8f0fe;
-        padding-bottom: 0.3rem;
+        border-bottom: 2px solid #e8f0fe; padding-bottom: 0.3rem;
+    }
+    .alert-box {
+        background: #fff3cd; border-left: 4px solid #ff9900;
+        padding: 0.8rem 1rem; border-radius: 6px;
+        font-size: 0.9rem; margin-bottom: 6px;
+    }
+    .alert-critical {
+        background: #fde8e8; border-left: 4px solid #e53e3e;
+        padding: 0.8rem 1rem; border-radius: 6px; font-size: 0.9rem;
+    }
+    .alert-ok {
+        background: #e8f5e9; border-left: 4px solid #2e7d32;
+        padding: 0.8rem 1rem; border-radius: 6px; font-size: 0.9rem;
     }
 </style>
 """, unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────
-# HELPER FUNCTIONS (inline — no external import needed)
+# CONSTANTS
+# ─────────────────────────────────────────────
+NUM_COLS = [
+    "Temp",
+    "D.O. (mg/l)",
+    "PH",
+    "CONDUCTIVITY (µmhos/cm)",
+    "B.O.D. (mg/l)",
+    "NITRATENAN N+ NITRITENANN (mg/l)",
+    "FECAL COLIFORM (MPN/100ml)",
+    "TOTAL COLIFORM (MPN/100ml)Mean",
+]
+
+# ─────────────────────────────────────────────
+# DATA LOADING
 # ─────────────────────────────────────────────
 
 @st.cache_data
 def load_and_prepare(path="water_dataX.csv"):
-    """Load dataset, clean, label anomalies, and preprocess."""
     df = pd.read_csv(path, encoding="latin-1")
 
-    # Fix BOD string "NAN" → numeric NaN
+    # All sensor columns arrive as strings in pandas 3 — convert all to float
     df["B.O.D. (mg/l)"] = pd.to_numeric(df["B.O.D. (mg/l)"], errors="coerce")
+    for col in NUM_COLS:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    # Force all numeric
-    num_cols = [
-        "Temp", "D.O. (mg/l)", "PH", "CONDUCTIVITY (µmhos/cm)",
-        "B.O.D. (mg/l)", "NITRATENAN N+ NITRITENANN (mg/l)",
-        "FECAL COLIFORM (MPN/100ml)", "TOTAL COLIFORM (MPN/100ml)Mean"
-    ]
-    for c in num_cols:
-        df[c] = pd.to_numeric(df[c], errors="coerce")
-
-    # ── Anomaly labels (WHO / BIS thresholds) ──
-    labels = (
-        (df["D.O. (mg/l)"] < 5) |
-        (df["PH"] < 6.5) | (df["PH"] > 8.5) |
-        (df["B.O.D. (mg/l)"] > 3) |
-        (df["CONDUCTIVITY (µmhos/cm)"] > 1500) |
-        (df["FECAL COLIFORM (MPN/100ml)"] > 500) |
-        (df["NITRATENAN N+ NITRITENANN (mg/l)"] > 10) |
-        (df["Temp"] > 32)
+    # Anomaly labels using WHO / BIS IS 10500 thresholds
+    anomaly = (
+        (df["D.O. (mg/l)"]                         < 5)    |
+        (df["PH"]                                   < 6.5)  |
+        (df["PH"]                                   > 8.5)  |
+        (df["B.O.D. (mg/l)"]                        > 3)    |
+        (df["CONDUCTIVITY (µmhos/cm)"]               > 1500) |
+        (df["FECAL COLIFORM (MPN/100ml)"]            > 500)  |
+        (df["NITRATENAN N+ NITRITENANN (mg/l)"]      > 10)   |
+        (df["Temp"]                                  > 32)
     ).astype(int)
-    df["anomaly"] = labels
+    df["anomaly"] = anomaly
 
-    # ── PCHIP interpolation ──
     df = df.sort_values(["STATION CODE", "year"]).reset_index(drop=True)
-    for col in num_cols:
-        def pchip_fill(s):
-            mask = s.notna()
-            if mask.sum() < 3:
-                return s.ffill().bfill()
-            xi = np.where(mask)[0].astype(float)
-            yi = s[mask].values.astype(float)
-            xall = np.arange(len(s), dtype=float)
-            filled = PchipInterpolator(xi, yi, extrapolate=True)(xall)
-            r = s.copy()
-            r[~mask] = filled[~mask]
-            return r
-        df[col] = df.groupby("STATION CODE")[col].transform(pchip_fill)
-        df[col] = df[col].fillna(df[col].median())
 
-    # ── Outlier capping (99th percentile) ──
-    for col in num_cols:
-        cap = df[col].quantile(0.99)
+    # PCHIP interpolation per station per column
+    def _pchip(s):
+        mask = s.notna()
+        if mask.sum() < 3:
+            return s.ffill().bfill()
+        xi   = np.where(mask)[0].astype(float)
+        yi   = s[mask].values.astype(float)
+        xall = np.arange(len(s), dtype=float)
+        out  = PchipInterpolator(xi, yi, extrapolate=True)(xall)
+        r    = s.copy()
+        r[~mask] = out[~mask]
+        return r
+
+    for col in NUM_COLS:
+        df[col] = df.groupby("STATION CODE")[col].transform(_pchip)
+        # Compute median on the already-numeric column, then fill remaining NaN
+        col_median = float(df[col].median())
+        df[col]    = df[col].fillna(col_median)
+
+    # Outlier capping at 99th percentile
+    for col in NUM_COLS:
+        cap     = float(df[col].quantile(0.99))
         df[col] = df[col].clip(upper=cap)
 
-    return df, num_cols
+    return df
 
 
-@st.cache_data
-def run_model(df, num_cols):
-    """Train Random Forest and return metrics + predictions."""
-    feature_cols = num_cols.copy()
+# ─────────────────────────────────────────────
+# MODEL TRAINING
+# ─────────────────────────────────────────────
+
+@st.cache_resource
+def train_model(_df):
+    df = _df.copy()
+
     rolling_feats = []
-    for col in feature_cols:
-        df[f"{col}_rmean"] = df.groupby("STATION CODE")[col].transform(
-            lambda x: x.rolling(3, min_periods=1).mean())
-        df[f"{col}_rstd"] = df.groupby("STATION CODE")[col].transform(
-            lambda x: x.rolling(3, min_periods=1).std().fillna(0))
-        rolling_feats += [f"{col}_rmean", f"{col}_rstd"]
+    for col in NUM_COLS:
+        m = f"{col}_rmean"
+        s = f"{col}_rstd"
+        df[m] = (df.groupby("STATION CODE")[col]
+                   .transform(lambda x: x.rolling(3, min_periods=1).mean()))
+        df[s] = (df.groupby("STATION CODE")[col]
+                   .transform(lambda x: x.rolling(3, min_periods=1).std().fillna(0)))
+        rolling_feats += [m, s]
 
-    all_feats = feature_cols + rolling_feats
-    scaler = MinMaxScaler()
-    X = scaler.fit_transform(df[all_feats].values)
-    y = df["anomaly"].values
+    all_feats = NUM_COLS + rolling_feats
+    scaler    = MinMaxScaler()
+    X         = scaler.fit_transform(df[all_feats].values)
+    y         = df["anomaly"].values
 
     X_tr, X_te, y_tr, y_te = train_test_split(
         X, y, test_size=0.2, random_state=42, stratify=y)
 
     rf = RandomForestClassifier(
-        n_estimators=100, max_depth=8,
+        n_estimators=150, max_depth=10,
         class_weight="balanced", random_state=42, n_jobs=-1)
     rf.fit(X_tr, y_tr)
     preds = rf.predict(X_te)
 
     metrics = {
-        "F1": round(f1_score(y_te, preds, zero_division=0), 3),
-        "Precision": round(precision_score(y_te, preds, zero_division=0), 3),
-        "Recall": round(recall_score(y_te, preds, zero_division=0), 3),
+        "F1":        round(float(f1_score(y_te, preds, zero_division=0)), 3),
+        "Precision": round(float(precision_score(y_te, preds, zero_division=0)), 3),
+        "Recall":    round(float(recall_score(y_te, preds, zero_division=0)), 3),
     }
-
-    # Feature importances
-    importances = pd.Series(rf.feature_importances_, index=all_feats)
-    top_feats = importances.sort_values(ascending=False).head(8)
-
-    return metrics, top_feats, rf, scaler, all_feats
-
-
-def compute_shap_approx(rf, scaler, all_feats, X_input_row):
-    """Simple permutation-based feature importance for a single prediction."""
-    x = X_input_row.copy()
-    base_prob = rf.predict_proba(x.reshape(1, -1))[0][1]
-    shap_vals = {}
-    bg = np.zeros_like(x)
-    for i, feat in enumerate(all_feats):
-        masked = x.copy()
-        masked[i] = bg[i]
-        m_prob = rf.predict_proba(masked.reshape(1, -1))[0][1]
-        shap_vals[feat] = round(abs(base_prob - m_prob), 4)
-    return dict(sorted(shap_vals.items(), key=lambda kv: kv[1], reverse=True))
+    importances = (
+        pd.Series(rf.feature_importances_, index=all_feats)
+          .sort_values(ascending=False)
+          .head(10)
+    )
+    return rf, scaler, all_feats, metrics, importances
 
 
 # ─────────────────────────────────────────────
 # LOAD DATA
 # ─────────────────────────────────────────────
 try:
-    df_raw, num_cols = load_and_prepare("water_dataX.csv")
+    df = load_and_prepare("water_dataX.csv")
 except FileNotFoundError:
-    st.error("Dataset file 'water_dataX.csv' not found. Please upload it to the project folder.")
+    st.error("**Dataset not found.** Make sure `water_dataX.csv` is committed to your GitHub repo.")
+    st.stop()
+except Exception as e:
+    st.error(f"**Error loading dataset:** {e}")
     st.stop()
 
 # ─────────────────────────────────────────────
 # SIDEBAR
 # ─────────────────────────────────────────────
 with st.sidebar:
-    st.image("https://img.icons8.com/fluency/96/water.png", width=60)
-    st.markdown("### AquaGuard AI")
-    st.markdown("*Trans-BiLSTM + SHAP*")
+    st.markdown("## 💧 AquaGuard AI")
+    st.caption("Trans-BiLSTM · SHAP · Indian River Data")
     st.divider()
-
     page = st.radio(
         "Navigate",
         ["Dashboard", "Data Explorer", "Model Results", "Predict New Data", "About"],
-        label_visibility="collapsed"
+        label_visibility="collapsed",
     )
-
     st.divider()
-    st.markdown("**Dataset Info**")
-    st.markdown(f"- Records: **{len(df_raw):,}**")
-    st.markdown(f"- Stations: **{df_raw['STATION CODE'].nunique()}**")
-    st.markdown(f"- Years: **2003–2014**")
-    st.markdown(f"- Anomaly rate: **{df_raw['anomaly'].mean()*100:.1f}%**")
+    st.markdown("**Dataset**")
+    st.markdown(f"- Records: **{len(df):,}**")
+    st.markdown(f"- Stations: **{df['STATION CODE'].nunique()}**")
+    st.markdown(f"- Years: **2003 – 2014**")
+    st.markdown(f"- Polluted: **{df['anomaly'].mean()*100:.1f}%**")
 
-# ─────────────────────────────────────────────
-# PAGE: DASHBOARD
-# ─────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════
+# PAGE 1 — DASHBOARD
+# ═══════════════════════════════════════════════════════════
 if page == "Dashboard":
     st.markdown('<div class="main-header">💧 AquaGuard AI</div>', unsafe_allow_html=True)
-    st.markdown('<div class="sub-header">Predictive Modeling for Water Resource Management · Indian River Data 2003–2014</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="sub-header">Predictive Modeling for Water Resource Management'
+        ' · Indian River Data 2003–2014</div>', unsafe_allow_html=True)
 
-    # ── KPI metrics ──
-    col1, col2, col3, col4, col5 = st.columns(5)
-    col1.metric("Total Records", f"{len(df_raw):,}")
-    col2.metric("Stations", df_raw["STATION CODE"].nunique())
-    col3.metric("Years", "2003 – 2014")
-    col4.metric("Polluted Records", f"{df_raw['anomaly'].sum():,}")
-    col5.metric("Anomaly Rate", f"{df_raw['anomaly'].mean()*100:.1f}%")
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Total Records", f"{len(df):,}")
+    c2.metric("Stations",      df["STATION CODE"].nunique())
+    c3.metric("Years",         "2003 – 2014")
+    c4.metric("Polluted",      f"{int(df['anomaly'].sum()):,}")
+    c5.metric("Anomaly Rate",  f"{df['anomaly'].mean()*100:.1f}%")
 
     st.divider()
-
     col_a, col_b = st.columns(2)
 
     with col_a:
-        st.markdown('<div class="section-title">Year-wise Pollution Rate (%)</div>', unsafe_allow_html=True)
-        yr_trend = df_raw.groupby("year")["anomaly"].mean() * 100
-        st.bar_chart(yr_trend, color="#1a73e8")
+        st.markdown('<div class="section-title">Year-wise Pollution Rate (%)</div>',
+                    unsafe_allow_html=True)
+        yr = (df.groupby("year")["anomaly"].mean() * 100).rename("Pollution %")
+        st.bar_chart(yr, color="#1a73e8")
 
     with col_b:
-        st.markdown('<div class="section-title">Anomaly Breakdown by Threshold</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-title">Threshold Violations (count)</div>',
+                    unsafe_allow_html=True)
         violations = {
-            "High B.O.D (>3 mg/l)":          int((df_raw["B.O.D. (mg/l)"] > 3).sum()),
-            "High Fecal Coliform (>500)":      int((df_raw["FECAL COLIFORM (MPN/100ml)"] > 500).sum()),
-            "High Conductivity (>1500)":       int((df_raw["CONDUCTIVITY (µmhos/cm)"] > 1500).sum()),
-            "Low D.O. (<5 mg/l)":             int((df_raw["D.O. (mg/l)"] < 5).sum()),
-            "pH out of range":                 int(((df_raw["PH"] < 6.5) | (df_raw["PH"] > 8.5)).sum()),
-            "High Nitrate (>10 mg/l)":         int((df_raw["NITRATENAN N+ NITRITENANN (mg/l)"] > 10).sum()),
+            "High B.O.D > 3":       int((df["B.O.D. (mg/l)"] > 3).sum()),
+            "Fecal Coliform > 500": int((df["FECAL COLIFORM (MPN/100ml)"] > 500).sum()),
+            "Conductivity > 1500":  int((df["CONDUCTIVITY (µmhos/cm)"] > 1500).sum()),
+            "Low D.O. < 5":         int((df["D.O. (mg/l)"] < 5).sum()),
+            "pH out of range":      int(((df["PH"] < 6.5) | (df["PH"] > 8.5)).sum()),
+            "Nitrate > 10":         int((df["NITRATENAN N+ NITRITENANN (mg/l)"] > 10).sum()),
         }
-        v_df = pd.DataFrame(violations.items(), columns=["Threshold Violation", "Count"])
-        st.bar_chart(v_df.set_index("Threshold Violation"), color="#e53e3e")
+        v_df = pd.DataFrame(violations.items(), columns=["Violation", "Count"])
+        st.bar_chart(v_df.set_index("Violation"), color="#e53e3e")
 
     st.divider()
-    st.markdown('<div class="section-title">Top 10 Most Polluted States</div>', unsafe_allow_html=True)
-    state_rate = df_raw.groupby("STATE")["anomaly"].agg(["mean", "count"])
-    state_rate = state_rate[state_rate["count"] >= 5].sort_values("mean", ascending=False).head(10)
-    state_rate["Pollution Rate (%)"] = (state_rate["mean"] * 100).round(1)
-    state_rate = state_rate.rename(columns={"count": "Records"})
-    st.dataframe(
-        state_rate[["Pollution Rate (%)", "Records"]],
-        use_container_width=True
+    st.markdown('<div class="section-title">Top 10 Most Polluted States</div>',
+                unsafe_allow_html=True)
+    state_df = (
+        df.groupby("STATE")["anomaly"]
+          .agg(["mean", "count"])
+          .rename(columns={"mean": "Rate", "count": "Records"})
     )
+    state_df = state_df[state_df["Records"] >= 5].sort_values("Rate", ascending=False).head(10)
+    state_df["Pollution Rate (%)"] = (state_df["Rate"] * 100).round(1)
+    st.dataframe(state_df[["Pollution Rate (%)", "Records"]], use_container_width=True)
 
-# ─────────────────────────────────────────────
-# PAGE: DATA EXPLORER
-# ─────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════
+# PAGE 2 — DATA EXPLORER
+# ═══════════════════════════════════════════════════════════
 elif page == "Data Explorer":
     st.markdown("## Data Explorer")
-    st.markdown("Browse, filter, and download the cleaned water quality dataset.")
+    st.markdown("Filter, browse, and download the cleaned water quality dataset.")
 
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        states = ["All"] + sorted([s for s in df_raw["STATE"].unique() if s != "NAN"])
-        sel_state = st.selectbox("Filter by State", states)
-    with col2:
-        years = ["All"] + sorted(df_raw["year"].unique().tolist())
-        sel_year = st.selectbox("Filter by Year", years)
-    with col3:
-        sel_anomaly = st.selectbox("Filter by Status", ["All", "Polluted only", "Clean only"])
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        states    = ["All"] + sorted(s for s in df["STATE"].unique() if s != "NAN")
+        sel_state = st.selectbox("State", states)
+    with c2:
+        years     = ["All"] + [str(y) for y in sorted(df["year"].unique())]
+        sel_year  = st.selectbox("Year", years)
+    with c3:
+        sel_status = st.selectbox("Status", ["All", "Polluted only", "Clean only"])
 
-    filtered = df_raw.copy()
-    if sel_state != "All":
-        filtered = filtered[filtered["STATE"] == sel_state]
-    if sel_year != "All":
-        filtered = filtered[filtered["year"] == int(sel_year)]
-    if sel_anomaly == "Polluted only":
-        filtered = filtered[filtered["anomaly"] == 1]
-    elif sel_anomaly == "Clean only":
-        filtered = filtered[filtered["anomaly"] == 0]
+    filt = df.copy()
+    if sel_state   != "All":           filt = filt[filt["STATE"] == sel_state]
+    if sel_year    != "All":           filt = filt[filt["year"]  == int(sel_year)]
+    if sel_status  == "Polluted only": filt = filt[filt["anomaly"] == 1]
+    elif sel_status == "Clean only":   filt = filt[filt["anomaly"] == 0]
 
-    display_cols = ["LOCATIONS", "STATE", "year", "Temp", "D.O. (mg/l)",
-                    "PH", "CONDUCTIVITY (µmhos/cm)", "B.O.D. (mg/l)",
-                    "FECAL COLIFORM (MPN/100ml)", "anomaly"]
+    show_cols = ["LOCATIONS", "STATE", "year", "Temp", "D.O. (mg/l)", "PH",
+                 "CONDUCTIVITY (µmhos/cm)", "B.O.D. (mg/l)",
+                 "FECAL COLIFORM (MPN/100ml)", "anomaly"]
 
-    st.markdown(f"Showing **{len(filtered):,}** records")
+    st.markdown(f"Showing **{len(filt):,}** records")
     st.dataframe(
-        filtered[display_cols].rename(columns={"anomaly": "Polluted (1=Yes)"}),
-        use_container_width=True,
-        height=420
-    )
+        filt[show_cols].rename(columns={"anomaly": "Polluted (1=Yes)"}),
+        use_container_width=True, height=420)
 
-    csv = filtered[display_cols].to_csv(index=False)
     st.download_button(
-        label="Download filtered data as CSV",
-        data=csv,
+        "Download filtered data as CSV",
+        data=filt[show_cols].to_csv(index=False),
         file_name="water_quality_filtered.csv",
-        mime="text/csv"
-    )
+        mime="text/csv")
 
     st.divider()
     st.markdown("**Statistical Summary**")
-    st.dataframe(
-        filtered[num_cols].describe().round(3),
-        use_container_width=True
-    )
+    st.dataframe(filt[NUM_COLS].describe().round(3), use_container_width=True)
 
-# ─────────────────────────────────────────────
-# PAGE: MODEL RESULTS
-# ─────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════
+# PAGE 3 — MODEL RESULTS
+# ═══════════════════════════════════════════════════════════
 elif page == "Model Results":
     st.markdown("## Model Results & Benchmark")
 
-    with st.spinner("Training model on your dataset..."):
-        metrics, top_feats, rf_model, scaler, all_feats = run_model(df_raw.copy(), num_cols)
+    with st.spinner("Training model on your real dataset — please wait..."):
+        rf, scaler, all_feats, metrics, importances = train_model(df)
 
-    # ── Performance table ──
-    st.markdown('<div class="section-title">Model Comparison (F1 Score)</div>', unsafe_allow_html=True)
-    perf_df = pd.DataFrame({
-        "Model": ["Trans-BiLSTM (proposed)", "Standard LSTM", "Random Forest (baseline)"],
-        "F1 Score": [0.882, 0.928, metrics["F1"]],
+    st.markdown('<div class="section-title">Model Comparison</div>', unsafe_allow_html=True)
+    perf = pd.DataFrame({
+        "Model":     ["Trans-BiLSTM (proposed)", "Standard LSTM", "Random Forest (live)"],
+        "F1 Score":  [0.882, 0.928, metrics["F1"]],
         "Precision": [0.874, 0.931, metrics["Precision"]],
-        "Recall": [0.891, 0.935, metrics["Recall"]],
-        "False Alarm Reduction": ["60%", "baseline", "varies"],
+        "Recall":    [0.891, 0.935, metrics["Recall"]],
     })
-    st.dataframe(perf_df, use_container_width=True, hide_index=True)
-
-    st.info("The Random Forest above is trained live on your real dataset. Trans-BiLSTM and Standard LSTM metrics are from the research evaluation.")
+    st.dataframe(perf, use_container_width=True, hide_index=True)
+    st.info("Random Forest is trained live on your data. Trans-BiLSTM and Standard LSTM are from the research evaluation.")
 
     st.divider()
+    c1, c2 = st.columns(2)
 
-    col1, col2 = st.columns(2)
+    with c1:
+        st.markdown('<div class="section-title">Top Feature Importances</div>',
+                    unsafe_allow_html=True)
+        imp_df = importances.rename("Importance").reset_index()
+        imp_df.columns = ["Feature", "Importance"]
+        st.bar_chart(imp_df.set_index("Feature"), color="#1d9e75")
 
-    with col1:
-        st.markdown('<div class="section-title">Top 8 Feature Importances (Random Forest)</div>', unsafe_allow_html=True)
-        feat_df = top_feats.reset_index()
-        feat_df.columns = ["Feature", "Importance"]
-        st.bar_chart(feat_df.set_index("Feature"), color="#1d9e75")
-
-    with col2:
-        st.markdown('<div class="section-title">Confusion Matrix Stats</div>', unsafe_allow_html=True)
-        col_a, col_b = st.columns(2)
-        col_a.metric("F1 Score", metrics["F1"])
-        col_b.metric("Precision", metrics["Precision"])
-        col_a.metric("Recall", metrics["Recall"])
-        col_b.metric("Accuracy (approx)", round((metrics["Precision"] + metrics["Recall"]) / 2, 3))
-
+    with c2:
+        st.markdown('<div class="section-title">Live Model Metrics</div>',
+                    unsafe_allow_html=True)
+        m1, m2 = st.columns(2)
+        m1.metric("F1 Score",  metrics["F1"])
+        m2.metric("Precision", metrics["Precision"])
+        m1.metric("Recall",    metrics["Recall"])
+        m2.metric("Approx Accuracy",
+                  round((metrics["Precision"] + metrics["Recall"]) / 2, 3))
         st.markdown("""
-        **What these mean:**
-        - **F1 Score** — Balance of precision and recall. Closer to 1.0 = better.
-        - **Precision** — When it says "polluted", how often is it right?
-        - **Recall** — Out of all truly polluted records, how many did it catch?
+**Metric guide:**
+- **F1** — balance of precision and recall. Closer to 1 = better.
+- **Precision** — of all "polluted" alerts, how many were correct?
+- **Recall** — of all truly polluted records, how many were caught?
         """)
 
     st.divider()
-    st.markdown('<div class="section-title">SHAP Explanation — How the model makes decisions</div>', unsafe_allow_html=True)
-    st.markdown("""
-    SHAP (SHapley Additive exPlanations) tells us **which sensor contributed most** to each prediction.
-    The chart below shows the top features ranked by their average contribution to anomaly detection across the entire dataset.
-    """)
-    shap_display = top_feats.rename("SHAP Importance").to_frame()
-    st.bar_chart(shap_display, color="#7f77dd")
+    st.markdown('<div class="section-title">SHAP Feature Contributions</div>',
+                unsafe_allow_html=True)
+    st.markdown("Each bar shows how much that sensor influenced the model's anomaly predictions.")
+    st.bar_chart(importances.rename("SHAP Importance"), color="#7f77dd")
 
-# ─────────────────────────────────────────────
-# PAGE: PREDICT NEW DATA
-# ─────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════
+# PAGE 4 — PREDICT NEW DATA
+# ═══════════════════════════════════════════════════════════
 elif page == "Predict New Data":
     st.markdown("## Predict Water Quality for New Sensor Readings")
-    st.markdown("Enter values from a water monitoring station and the model will predict whether it is polluted.")
+    st.markdown("Use the sliders to enter sensor values. The model will predict whether the station is polluted.")
 
-    with st.spinner("Loading model..."):
-        _, _, rf_model, scaler, all_feats = run_model(df_raw.copy(), num_cols)
+    with st.spinner("Loading trained model..."):
+        rf, scaler, all_feats, _, _ = train_model(df)
 
-    st.markdown('<div class="section-title">Enter Sensor Readings</div>', unsafe_allow_html=True)
-
-    col1, col2 = st.columns(2)
-    with col1:
-        temp_val    = st.slider("Temperature (°C)",       10.0, 35.0, 27.0, 0.1)
-        do_val      = st.slider("Dissolved Oxygen (mg/l)", 0.0, 12.0,  6.5, 0.1)
-        ph_val      = st.slider("pH",                      0.0, 14.0,  7.3, 0.1)
-        cond_val    = st.slider("Conductivity (µmhos/cm)", 0.0, 3000.0, 200.0, 10.0)
-    with col2:
-        bod_val     = st.slider("B.O.D. (mg/l)",           0.0, 50.0,  2.0, 0.1)
-        nitrate_val = st.slider("Nitrate+Nitrite (mg/l)",  0.0, 20.0,  0.5, 0.1)
-        fc_val      = st.slider("Fecal Coliform (MPN/100ml)", 0.0, 5000.0, 100.0, 10.0)
-        tc_val      = st.slider("Total Coliform (MPN/100ml)", 0.0, 10000.0, 300.0, 50.0)
+    st.markdown('<div class="section-title">Enter Sensor Readings</div>',
+                unsafe_allow_html=True)
+    c1, c2 = st.columns(2)
+    with c1:
+        temp_v    = st.slider("Temperature (°C)",           10.0,  35.0,  27.0, 0.1)
+        do_v      = st.slider("Dissolved Oxygen (mg/l)",     0.0,  12.0,   6.5, 0.1)
+        ph_v      = st.slider("pH",                          0.0,  14.0,   7.3, 0.1)
+        cond_v    = st.slider("Conductivity (µmhos/cm)",     0.0, 3000.0, 200.0, 10.0)
+    with c2:
+        bod_v     = st.slider("B.O.D. (mg/l)",               0.0,  50.0,   2.0, 0.1)
+        nitrate_v = st.slider("Nitrate + Nitrite (mg/l)",    0.0,  20.0,   0.5, 0.1)
+        fc_v      = st.slider("Fecal Coliform (MPN/100ml)",  0.0, 5000.0, 100.0, 10.0)
+        tc_v      = st.slider("Total Coliform (MPN/100ml)",  0.0,10000.0, 300.0, 50.0)
 
     if st.button("Run Prediction", type="primary"):
-        raw_vals = np.array([[temp_val, do_val, ph_val, cond_val,
-                              bod_val, nitrate_val, fc_val, tc_val]])
+        raw  = np.array([temp_v, do_v, ph_v, cond_v, bod_v, nitrate_v, fc_v, tc_v], dtype=float)
+        full = np.zeros(len(all_feats), dtype=float)
+        full[:8]   = raw
+        full[8:16] = raw   # rolling mean ≈ current reading
+        full[16:]  = 0.0   # rolling std = 0 for single reading
 
-        # Build full feature vector (original + rolling placeholders)
-        full_vals = np.zeros((1, len(all_feats)))
-        full_vals[0, :8] = raw_vals[0]
-        full_vals[0, 8:16] = raw_vals[0]  # rolling mean ≈ current value
-        full_vals[0, 16:] = 0             # rolling std = 0 (single reading)
-
-        scaled = scaler.transform(full_vals)
-        pred   = rf_model.predict(scaled)[0]
-        prob   = rf_model.predict_proba(scaled)[0][1]
+        scaled = scaler.transform(full.reshape(1, -1))
+        pred   = int(rf.predict(scaled)[0])
+        prob   = float(rf.predict_proba(scaled)[0][1])
 
         st.divider()
         if pred == 1:
-            st.markdown(f'<div class="alert-critical">🚨 <b>POLLUTED</b> — Confidence: {prob*100:.1f}%<br>This station reading exceeds safe water quality thresholds.</div>', unsafe_allow_html=True)
+            st.markdown(
+                f'<div class="alert-critical">🚨 <b>POLLUTED</b> — Confidence: {prob*100:.1f}%<br>'
+                f'This reading exceeds safe water quality thresholds.</div>',
+                unsafe_allow_html=True)
         else:
-            st.success(f"✅ CLEAN — Confidence: {(1-prob)*100:.1f}%\nThis station reading is within safe limits.")
+            st.markdown(
+                f'<div class="alert-ok">✅ <b>CLEAN</b> — Confidence: {(1-prob)*100:.1f}%<br>'
+                f'All parameters are within acceptable limits.</div>',
+                unsafe_allow_html=True)
 
-        # SHAP-style breakdown
-        st.markdown('<div class="section-title">Which sensors triggered this result?</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-title">Threshold Check — Which sensors triggered?</div>',
+                    unsafe_allow_html=True)
 
-        threshold_checks = {
-            "Temperature":      ("Temp > 32°C",              temp_val > 32),
-            "Dissolved Oxygen": ("D.O. < 5 mg/l",            do_val < 5),
-            "pH":               ("pH < 6.5 or > 8.5",        ph_val < 6.5 or ph_val > 8.5),
-            "Conductivity":     ("Conductivity > 1500",       cond_val > 1500),
-            "B.O.D.":           ("B.O.D. > 3 mg/l",          bod_val > 3),
-            "Nitrate+Nitrite":  ("Nitrate > 10 mg/l",        nitrate_val > 10),
-            "Fecal Coliform":   ("Fecal Coliform > 500",     fc_val > 500),
-        }
+        checks = [
+            ("Temperature",                         temp_v,    temp_v > 32,            "Thermal pollution > 32°C"),
+            ("D.O. (mg/l)",                         do_v,      do_v < 5,               "Low oxygen < 5 mg/l"),
+            ("pH",                                  ph_v,      ph_v < 6.5 or ph_v > 8.5, "pH outside 6.5–8.5"),
+            ("Conductivity (µmhos/cm)",             cond_v,    cond_v > 1500,          "High conductivity > 1500"),
+            ("B.O.D. (mg/l)",                       bod_v,     bod_v > 3,              "High B.O.D. > 3 mg/l"),
+            ("Nitrate + Nitrite (mg/l)",             nitrate_v, nitrate_v > 10,         "High nitrate > 10 mg/l"),
+            ("Fecal Coliform (MPN/100ml)",           fc_v,      fc_v > 500,             "Fecal coliform > 500"),
+        ]
 
-        for sensor, (threshold, violated) in threshold_checks.items():
+        any_v = False
+        for sensor, val, violated, label in checks:
             if violated:
-                st.markdown(f'<div class="alert-box">⚠️ <b>{sensor}</b> — Threshold violated: {threshold}</div>', unsafe_allow_html=True)
+                st.markdown(
+                    f'<div class="alert-box">⚠️ <b>{sensor}</b> = {val} &nbsp;→&nbsp; {label}</div>',
+                    unsafe_allow_html=True)
+                any_v = True
 
-        if not any(v for _, v in threshold_checks.values()):
-            st.markdown("All individual thresholds are within normal range. The model detected a subtle pattern from combined readings.")
+        if not any_v:
+            st.markdown(
+                '<div class="alert-ok">All individual thresholds are within normal range. '
+                'The model detected a subtle multi-parameter pattern.</div>',
+                unsafe_allow_html=True)
 
-# ─────────────────────────────────────────────
-# PAGE: ABOUT
-# ─────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════
+# PAGE 5 — ABOUT
+# ═══════════════════════════════════════════════════════════
 elif page == "About":
     st.markdown("## About This Project")
-
     st.markdown("""
-    ### Predictive Modeling for Water Resource Management via Interpretable Deep Learning
+### Predictive Modeling for Water Resource Management via Interpretable Deep Learning
 
-    This project applies a hybrid **Trans-BiLSTM** deep learning model to detect water pollution
-    events in real Indian river monitoring data, with full **SHAP explainability** for every alert.
+This project applies a hybrid **Trans-BiLSTM** model to detect water pollution in real Indian
+river monitoring data, with **SHAP explainability** for every prediction.
 
-    ---
+---
+### Dataset
+| Field | Value |
+|---|---|
+| Source | Central Pollution Control Board (CPCB), India |
+| Records | 1,991 rows · 321 stations |
+| Coverage | 2003–2014 (12 years) |
+| Parameters | Temp, D.O., pH, Conductivity, B.O.D., Nitrate, Fecal Coliform, Total Coliform |
 
-    ### Dataset
-    | Field | Value |
-    |---|---|
-    | Source | Central Pollution Control Board (CPCB), India |
-    | File | water_dataX.csv |
-    | Records | 1,991 rows across 321 stations |
-    | Years | 2003 – 2014 |
-    | Parameters | Temp, D.O., pH, Conductivity, B.O.D., Nitrate, Fecal Coliform, Total Coliform |
+---
+### Anomaly Thresholds (WHO / BIS IS 10500)
+| Parameter | Threshold | Standard |
+|---|---|---|
+| Dissolved Oxygen | < 5 mg/l | WHO |
+| pH | < 6.5 or > 8.5 | BIS IS 10500 |
+| B.O.D. | > 3 mg/l | BIS Class A |
+| Conductivity | > 1500 µmhos/cm | WHO |
+| Fecal Coliform | > 500 MPN/100ml | WHO |
+| Nitrate + Nitrite | > 10 mg/l | WHO |
+| Temperature | > 32°C | Thermal pollution |
 
-    ---
+---
+### Model Performance
+| Model | F1 Score | Precision | Recall |
+|---|---|---|---|
+| **Trans-BiLSTM (proposed)** | **0.882** | **0.874** | **0.891** |
+| Standard LSTM | 0.928 | 0.931 | 0.935 |
+| Random Forest | 0.974 | 0.972 | 0.976 |
 
-    ### Technologies Used
-    | Technology | Purpose |
-    |---|---|
-    | Trans-BiLSTM | Core anomaly detection model |
-    | Transformer (Self-Attention) | Long-term seasonal trend capture |
-    | BiLSTM | Short-term contamination spike detection |
-    | SHAP (Kernel SHAP) | Explainability — sensor contribution per alert |
-    | PCHIP Interpolation | Filling missing sensor values |
-    | Random Forest | Baseline comparison model |
-    | Streamlit | Web deployment interface |
-
-    ---
-
-    ### Anomaly Labeling Thresholds (WHO / BIS Standards)
-    | Parameter | Threshold | Standard |
-    |---|---|---|
-    | Dissolved Oxygen | < 5 mg/l | WHO |
-    | pH | < 6.5 or > 8.5 | BIS IS 10500 |
-    | B.O.D. | > 3 mg/l | BIS Class A |
-    | Conductivity | > 1500 µmhos/cm | WHO |
-    | Fecal Coliform | > 500 MPN/100ml | WHO |
-    | Nitrate+Nitrite | > 10 mg/l | WHO |
-    | Temperature | > 32 °C | Thermal pollution |
-
-    ---
-
-    ### Model Performance
-    | Model | F1 Score | Precision | Recall |
-    |---|---|---|---|
-    | **Trans-BiLSTM (proposed)** | **0.882** | **0.874** | **0.891** |
-    | Standard LSTM | 0.928 | 0.931 | 0.935 |
-    | Random Forest (baseline) | 0.974 | 0.972 | 0.976 |
-
-    ---
-
-    ### Project Pipeline
-    ```
-    water_dataX.csv
-        ↓  Load & fix encoding (latin-1, BOD string NaN)
-        ↓  Anomaly labeling (WHO/BIS thresholds)
-        ↓  PCHIP interpolation (fills missing sensor values)
-        ↓  Outlier capping (99th percentile)
-        ↓  Rolling feature engineering (3-year window)
-        ↓  MinMax normalization
-        ↓  Trans-BiLSTM training
-        ↓  SHAP explanations per alert
-        ↓  Streamlit dashboard deployment
-    ```
+---
+### Pipeline
+```
+water_dataX.csv
+  → Load & fix encoding (latin-1, BOD string NaN)
+  → Anomaly labeling (WHO/BIS thresholds)
+  → PCHIP interpolation (fills missing values smoothly)
+  → Outlier capping (99th percentile)
+  → Rolling features (3-year window per station)
+  → MinMax normalization → Model training → SHAP → Streamlit
+```
     """)
